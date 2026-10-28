@@ -52,7 +52,7 @@ class SegmentationConfig:
     max_inner_ratio: float = 0.75    # внутренность / контур (больше — группа или мелочь)
     edge_on: float = 0.3             # уровень карты границ, считающийся «видимой границей»
     min_closed: float = 0.55         # доля контура с видимой границей
-    min_diameter_px: float = 6.0     # меньше — неразрешимая «мелочь», px кадра
+    min_diameter_px: float = 5.0     # меньше — неразрешимая «мелочь», px кадра
     max_area_frac: float = 0.25      # больше доли ROI — ошибка сегментации
     coarse_factor: float = 1.6       # грубый масштаб для крупных кусков (1 — выключить)
     coarse_min_diameter_px: float = 5.0  # мин. диаметр на грубом масштабе, px уменьшенного кадра
@@ -63,6 +63,19 @@ class SegmentationConfig:
     min_solidity: float = 0.75
     min_solidity_large: float = 0.86 # для областей крупнее 4 мин. диаметров
     max_elongation: float = 4.0
+    # второй проход внутри отбракованных «групп»: слияние строже
+    refine: bool = True
+    refine_merge_threshold: float = 0.45
+    refine_merge_min_solidity: float = 0.70
+    refine_min_closed: float = 0.55
+    refine_max_inner_ratio: float = 0.75
+    refine_min_contrast: float = 0.0
+    min_contrast: float = 0.0        # мин. перепад яркости кусок/окружение (0 — не проверять)
+    # третий проход: мелкие светлые куски среди мелочи (white top-hat)
+    small_pieces: bool = True
+    small_max_diameter_px: float = 18.0   # px кадра
+    small_min_contrast: float = 12.0      # ярче кольца вокруг, уровней 0..255
+    small_k_mad: float = 3.0
 
 
 @dataclass

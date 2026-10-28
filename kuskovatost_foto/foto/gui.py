@@ -8,16 +8,18 @@
 from __future__ import annotations
 
 import csv
+import os
 import sys
 import threading
 import time
+import traceback
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import cv2
 import numpy as np
-from PySide6.QtCore import QObject, QPointF, QRectF, Qt, Signal
-from PySide6.QtGui import QColor, QImage, QPainter, QPen, QPixmap, QPolygonF
+from PySide6.QtCore import QLibraryInfo, QLocale, QObject, QPointF, QRectF, Qt, QTranslator, Signal
+from PySide6.QtGui import QColor, QIcon, QImage, QPainter, QPen, QPixmap, QPolygonF
 from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog,
                                QHBoxLayout, QHeaderView, QInputDialog, QLabel, QListWidget,
                                QListWidgetItem, QMainWindow, QMessageBox, QPushButton, QSizePolicy,
@@ -33,8 +35,8 @@ from fragmentation.bucket import BucketDetector  # noqa: E402
 from fragmentation.config import Config  # noqa: E402
 from fragmentation.imio import imread, imwrite  # noqa: E402
 
-from .analyze import (SIEVES, BucketInfo, PhotoResult, analyze, find_bucket, polygon_roi,  # noqa: E402
-                      size_classes, to_work)
+from .analyze import (SIEVES, BucketInfo, PhotoResult, analyze, finalize, find_bucket,  # noqa: E402
+                      fmt_x, polygon_roi, size_classes, to_work)
 
 PHOTO_FILTER = "Фото (*.jpg *.jpeg *.png *.bmp *.tif *.tiff *.webp);;Все файлы (*)"
 PHOTO_EXT = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
@@ -328,13 +330,13 @@ class Chart(FigureCanvasQTAgg):
             for k, c in (("x50_mm", "#4c78a8"), ("x80_mm", "#e45756")):
                 v = st[k]
                 a1.axvline(v, color=c, ls="--", lw=1)
-                a1.text(v, 3, f" {k[:3].upper()}={v:.0f}", color=c, fontsize=8, rotation=90, va="bottom")
+                a1.text(v, 3, f" {k[:3].upper()} {fmt_x(st, k)}", color=c, fontsize=8, rotation=90, va="bottom")
             a1.legend(fontsize=8, loc="upper left")
         if done:
             a1.set_xscale("log")
             a1.xaxis.set_major_formatter(matplotlib.ticker.FuncFormatter(lambda v, _: f"{v:g}"))
             a1.xaxis.set_minor_formatter(matplotlib.ticker.NullFormatter())
-            a1.set_xticks([t for t in (20, 50, 100, 200, 500, 1000, 2000)])
+            a1.set_xticks([t for t in (10, 20, 50, 100, 200, 500, 1000, 2000)])
             xs = np.concatenate([self._curve(p.result.stats)[0] for p in done])
             a1.set_xlim(max(10, xs.min() * 0.8), xs.max() * 1.2)
         else:
@@ -362,7 +364,10 @@ class Chart(FigureCanvasQTAgg):
 
     @staticmethod
     def _curve(st: dict):
-        """Кривая проход/размер по выделенным кускам (без ступенек сит)."""
+        """Кривая проход/размер (с мелочью, если она учитывается)."""
+        if st.get("curve"):
+            c = np.array(st["curve"])
+            return c[:, 0], c[:, 1]
         pts = sorted((float(k), v) for k, v in st["passing_pct"].items())
         x = [st["x10_mm"], st["x50_mm"], st["x80_mm"], st["x90_mm"], st["d_max_mm"]]
         y = [10, 50, 80, 90, 100]
@@ -382,7 +387,7 @@ class Bridge(QObject):
 class MainWindow(QMainWindow):
     def __init__(self, files=()):
         super().__init__()
-        self.setWindowTitle("Кусковатость породы по фото — демо")
+        self.setWindowTitle("Кусковатость породы по фото")
         self.resize(1600, 950)
         self.setAcceptDrops(True)
         self.cfg = Config()
@@ -423,6 +428,12 @@ class MainWindow(QMainWindow):
             self.detail.addItem(name)
         self.detail.setToolTip("«Быстро» — расчёт на уменьшенном фото: в 2–4 раза быстрее, "
                                "но мелкие куски теряются (годится для снимков крупным планом)")
+        self.use_fines = QCheckBox("учитывать мелочь")
+        self.use_fines.setChecked(True)
+        self.use_fines.setToolTip("Участки между кусками, где отдельные куски мельче предела разрешения "
+                                  "(голубая штриховка на фото), входят в состав как мелкая фракция. "
+                                  "Выключите, чтобы видеть состав только по выделенным кускам.")
+        self.use_fines.toggled.connect(self._fines_toggled)
         self.auto_open = QCheckBox("искать ковш при открытии")
         self.auto_open.setChecked(True)
         self.run_btn = QPushButton("▶  Распознать")
@@ -431,7 +442,7 @@ class MainWindow(QMainWindow):
         bar = QHBoxLayout()
         for w in (self.open_btn, self.auto_btn, self.poly_btn, self.line_btn,
                   QLabel(" Ширина ковша:"), self.width_mm, QLabel(" Масштаб:"), self.scale,
-                  QLabel(" Расчёт:"), self.detail, self.auto_open, self.run_btn, self.save_btn):
+                  QLabel(" Расчёт:"), self.detail, self.use_fines, self.auto_open, self.run_btn, self.save_btn):
             bar.addWidget(w)
         bar.addStretch(1)
         self.open_btn.clicked.connect(self.open_files)
@@ -459,7 +470,7 @@ class MainWindow(QMainWindow):
         self.status.setStyleSheet("font-size:14px; padding:4px;")
         mid = QVBoxLayout()
         mid.addWidget(self.view, 1)
-        self.status.setMinimumHeight(3 * self.status.fontMetrics().height() + 12)
+        self.status.setMinimumHeight(4 * self.status.fontMetrics().height() + 14)
         self.status.setAlignment(Qt.AlignLeft | Qt.AlignTop)
         mid.addWidget(self.show_ov)
         mid.addWidget(self.status)
@@ -699,7 +710,8 @@ class MainWindow(QMainWindow):
             try:
                 t = time.time()
                 r = analyze(ph.img, roi, self.cfg, ph.name, source, detail, scale_note)
-                r.stats["time_s"] = time.time() - t
+                r.time_s = time.time() - t
+                finalize(r, self.use_fines.isChecked())
                 self.bridge.result.emit(ph, r)
             except Exception as e:      # noqa: BLE001
                 self.bridge.failed.emit(ph, f"Ошибка распознавания: {e}")
@@ -708,13 +720,26 @@ class MainWindow(QMainWindow):
     def _on_result(self, ph: Photo, r: PhotoResult):
         ph.result = r
         self._set_busy(False)
-        i = self.photos.index(ph)
-        mark = f"X50 {r.stats['x50_mm']:.0f} мм" if "x50_mm" in r.stats else "мало кусков"
-        self.list.item(i).setText(f"{i + 1}. {ph.name}\n     {mark} ({r.source})")
+        self._list_text(ph)
         if ph is self.cur:
             self.show_ov.setChecked(True)
             self._refresh_view()
             self._status(self._describe(r), warn=r.source == "контур" and ph.scale_src == "условный")
+        self._refresh_results()
+
+    def _list_text(self, ph: Photo):
+        r = ph.result
+        i = self.photos.index(ph)
+        mark = f"X50 {fmt_x(r.stats, 'x50_mm')} мм" if "x50_mm" in r.stats else "мало кусков"
+        self.list.item(i).setText(f"{i + 1}. {ph.name}\n     {mark} ({r.source})")
+
+    def _fines_toggled(self, on: bool):
+        for ph in self.photos:
+            if ph.result is not None:
+                finalize(ph.result, on)
+                self._list_text(ph)
+        if self.cur is not None and self.cur.result is not None:
+            self._status(self._describe(self.cur.result))
         self._refresh_results()
 
     def _on_failed(self, ph: Photo, msg: str):
@@ -728,10 +753,13 @@ class MainWindow(QMainWindow):
             return (f"Выделено кусков: {st.get('n', 0)} — слишком мало для расчёта. "
                     "Обведите область побольше или выберите расчёт «Точно».")
         src = "порода в ковше (найден автоматически)" if r.source == "ковш" else "обведённая область"
-        return (f"Область: {src}. Кусков: {st['n']}. Масштаб {st['mm_per_px']:.2f} мм/пикс — {r.scale_note}. "
-                f"Предел разрешения ≈ {st['resolution_mm']:.0f} мм; "
-                f"неразрешённая площадь (мелочь) {st.get('unresolved_area_pct', 0):.0f} %. "
-                f"Расчёт {st.get('time_s', 0):.1f} с.")
+        fines = (f"Голубая штриховка — мелочь < {st.get('fines_below_mm', st['resolution_mm']):.0f} мм, "
+                 f"{st['fines_pct']:.0f} % площади" +
+                 (" (учтена)" if st.get("fines_used") else " (не учтена)") + ". ")
+        unk = (f"Серая — не распознано, {st['unknown_pct']:.0f} % (не учитывается). "
+               if st.get("unknown_pct", 0) >= 1 else "")
+        return (f"{src.capitalize()}: кусков {st['n']}, масштаб {st['mm_per_px']:.2f} мм/пикс ({r.scale_note}). "
+                + fines + unk + f"Расчёт {getattr(r, 'time_s', 0):.1f} с.")
 
     def _refresh_view(self):
         ph = self.cur
@@ -764,19 +792,36 @@ class MainWindow(QMainWindow):
             head = ""
             if cur:
                 s = cur.stats
-                head = (f"Это фото: X50 = {s['x50_mm']:.0f} мм, X80 = {s['x80_mm']:.0f} мм, "
+                head = (f"Это фото: X50 = {fmt_x(s, 'x50_mm')} мм, X80 = {fmt_x(s, 'x80_mm')} мм, "
                         f"d_ср = {s['d_mean_mm']:.0f} мм, макс. {s['d_max_mm']:.0f} мм\n")
-            self.total.setText(head + f"Среднее по фото ({len(done)}): X50 = {x50:.0f} мм, X80 = {x80:.0f} мм")
+            ms = {"x50_mm": x50, "x80_mm": x80, "fines_used": self.use_fines.isChecked(),
+                  "fines_below_mm": float(np.mean([p.result.stats.get("fines_below_mm", 0) for p in done]))}
+            self.total.setText(head + f"Среднее по фото ({len(done)}): X50 = {fmt_x(ms, 'x50_mm')} мм, "
+                                      f"X80 = {fmt_x(ms, 'x80_mm')} мм")
         else:
             self.total.setText("Кусковатость: —")
         names = [n for n, _ in size_classes({str(s): 0 for s in SIEVES})]
-        self.table.setRowCount(len(names))
+        self.table.setRowCount(len(names) + 1)
         for i, name in enumerate(names):
             self.table.setItem(i, 0, QTableWidgetItem(name))
             for j, src in ((1, last), (2, avg)):
                 it = QTableWidgetItem(f"{src[i][1]:.1f}" if src else "—")
                 it.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
                 self.table.setItem(i, j, it)
+        # отдельной строкой — сколько из этого мелочь (не различимая поштучно)
+        k = len(names)
+        on = self.use_fines.isChecked()
+        it = QTableWidgetItem("в т.ч. мелочь" if on else "мелочь (не учтена)")
+        it.setToolTip("Доля площади пород, занятая мелочью мельче предела разрешения (голубая штриховка)")
+        it.setForeground(QColor("#1f6fb5"))
+        self.table.setItem(k, 0, it)
+        vals = [cur.stats.get("fines_pct") if cur else None,
+                float(np.mean([p.result.stats.get("fines_pct", 0) for p in done])) if done else None]
+        for j, v in ((1, vals[0]), (2, vals[1])):
+            it = QTableWidgetItem("—" if v is None else f"{v:.1f}")
+            it.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            it.setForeground(QColor("#1f6fb5"))
+            self.table.setItem(k, j, it)
 
     def _status(self, text: str, warn: bool = False):
         self.status.setText(text)
@@ -812,15 +857,19 @@ class MainWindow(QMainWindow):
         with open(out / "results.csv", "w", newline="", encoding="utf-8-sig") as f:
             w = csv.writer(f, delimiter=";")
             w.writerow(["№", "фото", "область", "кусков", "масштаб, мм/пикс", "X10, мм", "X50, мм", "X80, мм",
-                        "X90, мм", "d_ср, мм", "макс., мм", "неразрешённая площадь, %"] + [f"{n}, %" for n in names])
+                        "X90, мм", "d_ср, мм", "макс., мм", "мелочь (по площади), %", "мелочь учтена",
+                        "не распознано, %"] + [f"{n}, %" for n in names])
             for p in done:
                 s = p.result.stats
                 i = self.photos.index(p) + 1
 
                 def v(k):
+                    if k in ("x10_mm", "x50_mm", "x80_mm", "x90_mm"):
+                        return fmt_x(s, k)
                     return f"{s[k]:.1f}".replace(".", ",") if k in s else ""
                 w.writerow([i, p.name, p.result.source, s.get("n", 0), v("mm_per_px"), v("x10_mm"), v("x50_mm"),
-                            v("x80_mm"), v("x90_mm"), v("d_mean_mm"), v("d_max_mm"), v("unresolved_area_pct")] +
+                            v("x80_mm"), v("x90_mm"), v("d_mean_mm"), v("d_max_mm"), v("fines_pct"),
+                            "да" if s.get("fines_used") else "нет", v("unknown_pct")] +
                            [f"{c:.1f}".replace(".", ",") for _, c in p.result.classes])
                 stem = f"{i:02d}_{Path(p.name).stem}"
                 imwrite(out / "overlays" / f"{stem}_kuski.jpg", p.result.overlay, [cv2.IMWRITE_JPEG_QUALITY, 90])
@@ -828,18 +877,66 @@ class MainWindow(QMainWindow):
         self._status(f"Отчёт сохранён: {out}")
 
 
-def main(argv=None):
-    argv = sys.argv[1:] if argv is None else argv
+def log_file() -> Path:
+    """Журнал logs/foto.log рядом с программой; если папка только для чтения
+    (например, Program Files) — в %LOCALAPPDATA%/KuskovatostFoto/logs."""
+    for d in (Path(__file__).resolve().parent.parent / "logs",
+              Path(os.environ.get("LOCALAPPDATA") or Path.home()) / "KuskovatostFoto" / "logs"):
+        try:
+            d.mkdir(parents=True, exist_ok=True)
+            f = d / "foto.log"
+            with open(f, "a", encoding="utf-8"):
+                pass
+            return f
+        except OSError:
+            continue
+    return Path(os.devnull)
+
+
+def setup_logging() -> Path:
+    path = log_file()
     if sys.stderr is None or sys.stdout is None:
-        # запуск через pythonw (ярлык, без консоли): сообщения и ошибки — в logs/foto.log
-        log_dir = Path(__file__).resolve().parent.parent / "logs"
-        log_dir.mkdir(exist_ok=True)
-        f = open(log_dir / "foto.log", "a", encoding="utf-8", buffering=1)
+        # запуск без консоли (pythonw, ярлык): сообщения и ошибки — в журнал
+        f = open(path, "a", encoding="utf-8", buffering=1)
         sys.stdout = sys.stderr = f
-        print(f"--- запуск {time.strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"--- запуск {time.strftime('%Y-%m-%d %H:%M:%S')}")
+    return path
+
+
+def install_excepthook(log: Path):
+    """Ошибка в обработчике кнопки не закрывает окно: пишется в журнал и показывается."""
+    def hook(tp, val, tb):
+        traceback.print_exception(tp, val, tb)
+        try:
+            QApplication.restoreOverrideCursor()
+            QMessageBox.warning(None, "Ошибка", f"{tp.__name__}: {val}\n\nПодробности в журнале:\n{log}")
+        except Exception:      # noqa: BLE001
+            pass
+    sys.excepthook = hook
+
+
+def make_app() -> QApplication:
     app = QApplication.instance() or QApplication(sys.argv[:1])
+    app.setApplicationName("Кусковатость породы по фото")
+    # русские подписи стандартных кнопок (OK/Отмена) в диалогах Qt
+    tr = QTranslator(app)
+    if tr.load(QLocale("ru_RU"), "qtbase", "_", QLibraryInfo.path(QLibraryInfo.TranslationsPath)):
+        app.installTranslator(tr)
+    icon = Path(__file__).resolve().parent / "icon.ico"
+    if icon.exists():
+        app.setWindowIcon(QIcon(str(icon)))
+    return app
+
+
+def main(argv=None, splash=None):
+    argv = sys.argv[1:] if argv is None else argv
+    log = setup_logging()
+    install_excepthook(log)
+    app = make_app()
     win = MainWindow([a for a in argv if Path(a).exists()])
-    win.show()
+    win.showMaximized()
+    if splash is not None:
+        splash.finish(win)
     return app.exec()
 
 

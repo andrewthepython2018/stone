@@ -134,7 +134,15 @@ def _merge_regions(labels, B, gray, thr_b, thr_i, min_solidity):
     return roots[labels]
 
 
-def segment(crop_bgr: np.ndarray, roi: Roi, cfg: SegmentationConfig, debug: dict | None = None) -> Segmentation:
+# области, отбракованные как «слипшаяся группа», а не как мелочь: внутри них
+# второй проход ищет отдельные куски при более строгом слиянии
+_REFINE = ("solidity", "border", "too_big", "textured_inside", "open_contour")
+
+
+def segment(crop_bgr: np.ndarray, roi: Roi, cfg: SegmentationConfig, debug: dict | None = None,
+            border_mask: np.ndarray | None = None, refine: bool = True) -> Segmentation:
+    """border_mask — маска, по краю которой куски считаются обрезанными (по
+    умолчанию roi.mask); refine — второй проход внутри отбракованных групп."""
     u = cfg.upscale
     mask0 = roi.mask
     gray0 = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2LAB)[:, :, 0]
@@ -161,7 +169,9 @@ def segment(crop_bgr: np.ndarray, roi: Roi, cfg: SegmentationConfig, debug: dict
     min_area_up = np.pi * (cfg.min_diameter_px * u / 2) ** 2
     max_area = cfg.max_area_frac * roi_area
     ker = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-    border = ~cv2.erode(mask.astype(np.uint8), ker, iterations=2).astype(bool)
+    bm = mask if border_mask is None else cv2.resize(
+        border_mask.astype(np.uint8), (mask.shape[1], mask.shape[0]), interpolation=cv2.INTER_NEAREST).astype(bool)
+    border = ~cv2.erode(bm.astype(np.uint8), ker, iterations=2).astype(bool)
     x0, y0 = roi.box[0], roi.box[1]
 
     frags = []
@@ -222,6 +232,14 @@ def segment(crop_bgr: np.ndarray, roi: Roi, cfg: SegmentationConfig, debug: dict
             rej["open_contour"] += 1
             why[rp.label] = "open_contour"
             continue
+        if cfg.min_contrast > 0:
+            # кусок заметно светлее/темнее окружения (тени-зазоры, мелочь вокруг);
+            # грань того же куска или зерно мелочи такого перепада не дают
+            gs = gray_s[R0:r1 + 2, C0:c1 + 2]
+            if abs(float(gs[sub].mean()) - float(gs[ring].mean())) < cfg.min_contrast:
+                rej["low_contrast"] = rej.get("low_contrast", 0) + 1
+                why[rp.label] = "low_contrast"
+                continue
         cy_up, cx_up = rp.centroid
         cy0 = min(int(cy_up / u), roi.mm_per_px.shape[0] - 1)
         cx0 = min(int(cx_up / u), roi.mm_per_px.shape[1] - 1)
@@ -235,14 +253,47 @@ def segment(crop_bgr: np.ndarray, roi: Roi, cfg: SegmentationConfig, debug: dict
         keep[rp.label] = True
     if debug is not None:
         debug.update(labels=labels.copy(), why=why, B=B, u=u)
+    group = np.zeros(labels.max() + 1, bool)
+    for lab_id, w in why.items():
+        if w in _REFINE:
+            group[lab_id] = True
+    group_mask = group[labels]
     labels = np.where(keep[labels], labels, 0)
     labels0 = cv2.resize(labels.astype(np.int32), (mask0.shape[1], mask0.shape[0]),
                          interpolation=cv2.INTER_NEAREST)
+    fines0 = fines_area / u / u
+    if refine and cfg.refine and group_mask.any():
+        # 2-й проход: слипшиеся группы (мелкие куски вперемешку с мелочью,
+        # склеенные через слабые границы) делятся заново со строгим слиянием;
+        # обрезанными считаются только куски у края исходной области
+        gm = cv2.resize(group_mask.astype(np.uint8), (mask0.shape[1], mask0.shape[0]),
+                        interpolation=cv2.INTER_NEAREST).astype(bool) & mask0
+        if gm.sum() > 4 * np.pi * (cfg.min_diameter_px / 2) ** 2:
+            cfg2 = replace(cfg, merge_threshold=cfg.refine_merge_threshold,
+                           merge_min_solidity=cfg.refine_merge_min_solidity,
+                           min_closed=cfg.refine_min_closed, max_inner_ratio=cfg.refine_max_inner_ratio,
+                           min_contrast=cfg.refine_min_contrast)
+            roi2 = Roi(roi.kind, roi.box, gm, roi.mm_per_px, roi.ref_px)
+            s2 = segment(crop_bgr, roi2, cfg2, border_mask=mask0 if border_mask is None else border_mask,
+                         refine=False)
+            off = int(labels0.max()) + 1
+            l2 = s2.labels
+            labels0 = np.where((l2 > 0) & (labels0 == 0), l2 + off, labels0)
+            for f in s2.fragments:
+                f.label += off
+            frags += s2.fragments
+            fines0 += s2.fines_area_px
+            rej["refined"] = len(s2.fragments)
     resolved = float(sum(f.area_px for f in frags))
-    return Segmentation(labels0, frags, roi_area / u / u, resolved, fines_area / u / u, rej)
+    return Segmentation(labels0, frags, roi_area / u / u, resolved, fines0, rej)
 
 
 def segment_multiscale(crop_bgr: np.ndarray, roi: Roi, cfg: SegmentationConfig) -> Segmentation:
+    """Два масштаба водораздела + мелкие куски среди мелочи."""
+    return small_pieces(crop_bgr, roi, _segment_two_scales(crop_bgr, roi, cfg), cfg)
+
+
+def _segment_two_scales(crop_bgr: np.ndarray, roi: Roi, cfg: SegmentationConfig) -> Segmentation:
     """Двухмасштабная сегментация.
 
     На мелком масштабе хорошо выделяются мелкие и средние куски, но крупный
@@ -322,3 +373,86 @@ def overlay(crop_bgr: np.ndarray, seg: Segmentation, roi: Roi) -> np.ndarray:
     cnts, _ = cv2.findContours(roi.mask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     cv2.drawContours(out, cnts, -1, (255, 0, 255), 1)
     return out
+
+
+def small_pieces(crop_bgr: np.ndarray, roi: Roi, seg: Segmentation, cfg: SegmentationConfig) -> Segmentation:
+    """Третий проход: мелкие светлые куски среди мелочи.
+
+    Водораздел по карте границ теряет мелкие (6–20 px) куски, рассыпанные по
+    мелочи: их граница сливается с текстурой мелочи, и они уходят в «группы».
+    Такой кусок — светлое пятно на более тёмном фоне, поэтому он ищется
+    морфологическим white top-hat в ещё не занятой кусками части области и
+    принимается, если пятно компактное, выпуклое и заметно ярче окружения.
+    """
+    if not cfg.small_pieces:
+        return seg
+    u = cfg.upscale
+    mask0 = roi.mask
+    h0, w0 = mask0.shape
+    gray0 = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2LAB)[:, :, 0]
+    g = cv2.resize(gray0, None, fx=u, fy=u, interpolation=cv2.INTER_CUBIC)
+    g = cv2.bilateralFilter(g, int(4 * u) | 1, cfg.denoise_sigma_color, 2.0 * u).astype(np.float32)
+    H, W = g.shape
+    up = lambda m: cv2.resize(m.astype(np.uint8), (W, H), interpolation=cv2.INTER_NEAREST).astype(bool)  # noqa: E731
+    mask = up(mask0)
+    taken = up(seg.labels > 0)
+    ker = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+    free = mask & ~cv2.dilate(taken.astype(np.uint8), ker, iterations=int(round(u))).astype(bool)
+    if free.sum() < 50:
+        return seg
+    r = int(round(cfg.small_max_diameter_px * u / 2)) + 2
+    th = cv2.morphologyEx(g, cv2.MORPH_TOPHAT, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * r + 1, 2 * r + 1)))
+    v = th[free]
+    med = float(np.median(v))
+    mad = float(np.median(np.abs(v - med))) + 1e-3
+    thr = max(cfg.small_min_contrast, med + cfg.small_k_mad * 1.4826 * mad)
+    seeds = (th > thr) & free
+    n, markers = cv2.connectedComponents(seeds.astype(np.uint8), connectivity=8)
+    if n <= 1:
+        return seg
+    lab = watershed(-th, markers, mask=(th > 0.5 * thr) & free)
+    border = ~cv2.erode(mask.astype(np.uint8), ker, iterations=2).astype(bool)
+    min_a = np.pi * (cfg.min_diameter_px * u / 2) ** 2
+    max_a = np.pi * (cfg.small_max_diameter_px * u / 2) ** 2
+    x0, y0 = roi.box[0], roi.box[1]
+    labels = seg.labels.copy()
+    off = int(labels.max()) + 1
+    frags = list(seg.fragments)
+    added = 0
+    for rp in regionprops(lab, intensity_image=th):
+        a = rp.area
+        if a < min_a or a > max_a or rp.solidity < cfg.min_solidity:
+            continue
+        maj, mnr = rp.axis_major_length, max(rp.axis_minor_length, 1.0)
+        if maj / mnr > 3.0:
+            continue
+        r0, c0, r1, c1 = rp.bbox
+        if border[r0:r1, c0:c1][rp.image].any():
+            continue
+        # пятно должно быть ярче своего кольца: зерно мелочи / блик такого перепада не даёт
+        R0, C0 = max(0, r0 - 3), max(0, c0 - 3)
+        sub = lab[R0:r1 + 3, C0:c1 + 3] == rp.label
+        ring = cv2.dilate(sub.astype(np.uint8), ker, iterations=2).astype(bool) & ~sub
+        gs = g[R0:r1 + 3, C0:c1 + 3]
+        if ring.sum() == 0 or float(gs[sub].mean()) - float(gs[ring].mean()) < cfg.small_min_contrast:
+            continue
+        cy_up, cx_up = rp.centroid
+        cy0, cx0 = min(int(cy_up / u), h0 - 1), min(int(cx_up / u), w0 - 1)
+        s = float(roi.mm_per_px[cy0, cx0]) / u
+        lid = off + added
+        added += 1
+        frags.append(Fragment(cx=x0 + cx_up / u, cy=y0 + cy_up / u, area_px=a / u / u,
+                              d_eq_mm=float(rp.equivalent_diameter_area) * s,
+                              feret_max_mm=float(rp.feret_diameter_max) * s,
+                              minor_mm=float(mnr) * s, major_mm=float(maj) * s, label=lid))
+        m0 = cv2.resize(sub.astype(np.uint8), None, fx=1 / u, fy=1 / u, interpolation=cv2.INTER_AREA) > 0
+        rr, cc = int(R0 / u), int(C0 / u)
+        hh, ww = min(m0.shape[0], h0 - rr), min(m0.shape[1], w0 - cc)
+        blk = labels[rr:rr + hh, cc:cc + ww]
+        blk[m0[:hh, :ww] & (blk == 0)] = lid
+    if not added:
+        return seg
+    rej = dict(seg.rejected or {})
+    rej["small_pieces"] = added
+    resolved = float(sum(f.area_px for f in frags))
+    return Segmentation(labels, frags, seg.roi_area_px, resolved, seg.fines_area_px, rej)

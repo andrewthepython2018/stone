@@ -145,6 +145,15 @@ class PhotoResult:
     overlay: np.ndarray               # рабочее фото с найденными кусками
     scale_note: str = ""
     classes: list = field(default_factory=list)
+    d_mm: np.ndarray | None = None    # размеры выделенных кусков, мм
+    fines_mask: np.ndarray | None = None
+    fines_frac: float = 0.0           # доля мелочи по площади (мелочь / (мелочь + куски))
+    unknown_pct: float = 0.0          # % области без кусков и без мелочи рядом с ними
+    unresolved: float = 0.0
+    mm_per_px: float = 0.0
+    resolution_mm: float = 0.0
+    oversize_mm: float = 1000.0
+    sieves: list = field(default_factory=list)
 
 
 def analyze(img: np.ndarray, roi: Roi, cfg: Config, name: str = "", source: str = "",
@@ -172,19 +181,128 @@ def analyze(img: np.ndarray, roi: Roi, cfg: Config, name: str = "", source: str 
     else:
         seg = segment_multiscale(crop, roi, cfg.segmentation)
     unresolved = 1 - seg.resolved_area_px / max(1.0, seg.roi_area_px)
-    sieves = sorted(set(cfg.report.sieve_sizes_mm) | set(SIEVES))
-    stats = size_stats([fr.d_eq_mm for fr in seg.fragments], cfg.report.oversize_mm, sieves, unresolved)
-    stats["mm_per_px"] = roi.mean_mm_per_px
-    stats["resolution_mm"] = roi.mean_mm_per_px * cfg.segmentation.min_diameter_px / min(1.0, f)
+    fines, unknown = fines_mask(crop, roi, seg)
+    res = PhotoResult(name, source, {}, roi, seg, img, scale_note)
+    res.d_mm = np.array([fr.d_eq_mm for fr in seg.fragments], float)
+    res.fines_mask = fines
+    res.unknown_pct = 100 * float(unknown.sum()) / max(1.0, float(roi.mask.sum()))
+    fa, ra = float(fines.sum()), float(seg.resolved_area_px)
+    res.fines_frac = fa / (fa + ra) if fa + ra > 0 else 0.0
+    res.unresolved = unresolved
+    res.mm_per_px = roi.mean_mm_per_px
+    res.resolution_mm = roi.mean_mm_per_px * cfg.segmentation.min_diameter_px / min(1.0, f)
+    res.oversize_mm = cfg.report.oversize_mm
+    res.sieves = sorted(set(cfg.report.sieve_sizes_mm) | set(SIEVES))
+    finalize(res, use_fines=True)
     ov = img.copy()
     x0, y0, x1, y1 = roi.box
     ov[y0:y1, x0:x1] = overlay(crop, seg, roi)
+    sub = ov[y0:y1, x0:x1]
+    if fines.any():
+        # мелочь — голубая штриховка: видно, что участок учтён, а не пропущен
+        hatch = np.zeros(fines.shape, bool)
+        yy, xx = np.mgrid[0:fines.shape[0], 0:fines.shape[1]]
+        hatch[((xx + yy) % 7) < 2] = True
+        tint = np.array(FINES_BGR, np.float32)
+        sub[fines] = (0.65 * sub[fines] + 0.35 * tint).astype(np.uint8)
+        sub[fines & hatch] = (0.3 * sub[fines & hatch] + 0.7 * tint).astype(np.uint8)
+    if unknown.any():
+        # не распознано (нет кусков поблизости) — серая штриховка, в расчёт не входит
+        yy, xx = np.mgrid[0:unknown.shape[0], 0:unknown.shape[1]]
+        hatch = unknown & ((((xx - yy) % 9) < 2))
+        sub[hatch] = UNKNOWN_BGR
     cnts, _ = cv2.findContours(roi.mask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     cv2.drawContours(ov, [c + [[x0, y0]] for c in cnts], -1, (255, 0, 255), 3)
-    res = PhotoResult(name, source, stats, roi, seg, ov, scale_note)
-    if "passing_pct" in stats:
-        res.classes = size_classes(stats["passing_pct"], SIEVES)
+    res.overlay = ov
     return res
+
+
+FINES_BGR = (255, 170, 60)       # голубой (BGR)
+FINES_GGS_N = 0.6                # показатель Годэна–Шумана для распределения внутри мелочи
+FINES_REACH = 4.0                # мелочь — не дальше стольких медианных диаметров куска от кусков
+UNKNOWN_BGR = (150, 150, 150)
+
+
+def fines_mask(crop: np.ndarray, roi: Roi, seg: Segmentation) -> tuple[np.ndarray, np.ndarray]:
+    """Мелочь: часть области без выделенных кусков, кроме узких тёмных зазоров
+    и теней между кусками (они не порода, а промежутки). Это материал мельче
+    предела разрешения — по одной фотографии его поштучно не разделить."""
+    m = roi.mask.copy()
+    ker = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+    taken = cv2.dilate((seg.labels > 0).astype(np.uint8), ker, iterations=1).astype(bool)
+    g = cv2.cvtColor(crop, cv2.COLOR_BGR2LAB)[:, :, 0]
+    g = cv2.GaussianBlur(g, (0, 0), 0.8)
+    bh = cv2.morphologyEx(g, cv2.MORPH_BLACKHAT, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9)))
+    gaps = bh > 18
+    free = m & ~taken & ~gaps
+    # убираем одиночные пиксели и узкие перемычки между кусками
+    free = cv2.morphologyEx(free.astype(np.uint8), cv2.MORPH_OPEN, ker).astype(bool)
+    # мелочь лежит между кусками; большой участок вдали от любых кусков может
+    # быть и крупной глыбой, и не породой (борт, металл) — его не относим к мелочи
+    if seg.fragments:
+        d_px = np.median([2 * np.sqrt(fr.area_px / np.pi) for fr in seg.fragments])
+        reach = max(15.0, FINES_REACH * d_px)
+        dist = cv2.distanceTransform((~taken).astype(np.uint8), cv2.DIST_L2, 3)
+        unknown = free & (dist > reach)
+        free &= dist <= reach
+    else:
+        unknown, free = free, np.zeros_like(free)
+    return free, unknown
+
+
+def finalize(res: PhotoResult, use_fines: bool = True) -> None:
+    """Показатели по кускам; с учётом мелочи — по принципу Делесса (доля площади
+    сечения = доля объёма) мелочь даёт долю F массы мельче самого мелкого
+    различимого куска, а распределение выделенных кусков масштабируется на 1 − F."""
+    d = res.d_mm
+    stats = size_stats(d, res.oversize_mm, res.sieves, res.unresolved)
+    stats["mm_per_px"] = res.mm_per_px
+    stats["resolution_mm"] = res.resolution_mm
+    F = res.fines_frac if use_fines else 0.0
+    stats["fines_pct"] = 100 * res.fines_frac
+    stats["fines_used"] = bool(use_fines)
+    stats["unknown_pct"] = res.unknown_pct
+    if "x50_mm" in stats:
+        ds = np.sort(d[np.isfinite(d) & (d > 0)])
+        cum = np.cumsum(ds ** 3) / np.sum(ds ** 3)
+        dmin = float(ds[0])
+        stats["fines_below_mm"] = dmin
+        xs = np.concatenate([[dmin], ds])
+        ps = np.concatenate([[F], F + (1 - F) * cum])
+
+        def passing(x):
+            x = float(x)
+            if x < dmin:
+                return F * (x / dmin) ** FINES_GGS_N
+            return float(np.interp(x, xs, ps))
+
+        def size_at(p):
+            if p <= F and F > 0:
+                return dmin * (p / F) ** (1 / FINES_GGS_N)
+            return float(np.interp(p, ps, xs))
+
+        if F > 0:
+            for k, p in (("x10_mm", .1), ("x50_mm", .5), ("x80_mm", .8), ("x90_mm", .9)):
+                stats[k] = size_at(p)
+            stats["passing_pct"] = {str(int(s_)): 100 * passing(s_) for s_ in res.sieves}
+            stats["d_mean_mm"] = (1 - F) * stats["d_mean_mm"] + F * dmin * FINES_GGS_N / (FINES_GGS_N + 1)
+            stats["oversize_mass_pct"] *= (1 - F)
+        grid = np.geomspace(max(1.0, dmin * 0.25), ds[-1], 60)
+        stats["curve"] = [(float(x), 100 * passing(x)) for x in grid]
+    res.stats = stats
+    res.classes = size_classes(stats["passing_pct"], SIEVES) if "passing_pct" in stats else []
+
+
+def fmt_x(st: dict, key: str) -> str:
+    """Размер Xnn для показа: если он попал в мелочь (мельче самого мелкого
+    различимого куска), точного значения нет — пишем «< N»."""
+    v = st.get(key)
+    if v is None:
+        return "—"
+    lim = st.get("fines_below_mm")
+    if st.get("fines_used") and lim and v < lim:
+        return f"< {lim:.0f}"
+    return f"{v:.0f}"
 
 
 def size_classes(passing: dict, sieves=SIEVES) -> list[tuple[str, float]]:

@@ -1,0 +1,23 @@
+# Точные версии для переносной сборки под Windows (Python 3.12, win_amd64) —
+# те же, на которых программа проверена.
+numpy==2.5.4
+opencv-python-headless==5.0.0.93
+scipy==1.18.1
+scikit-image==0.26.0
+matplotlib==3.11.2
+PySide6-Essentials==6.12.0
+shiboken6==6.12.0
+pillow==13.0.0
+contourpy==1.4.0
+cycler==0.12.1
+fonttools==4.68.0
+imageio==2.38.1
+kiwisolver==1.5.1
+lazy_loader==0.6
+networkx==3.7
+packaging==26.3
+pyparsing==3.3.3
+python-dateutil==3.0.0
+six==1.17.0
+tifffile==2026.10.15
+tzdata==2026.6
