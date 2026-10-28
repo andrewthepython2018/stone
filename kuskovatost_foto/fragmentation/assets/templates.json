@@ -1,0 +1,4 @@
+[
+  {"name": "near", "file": "tpl_near.png", "housing_x0": 35, "housing_x1": 475, "housing_top": 15},
+  {"name": "far",  "file": "tpl_far.png",  "housing_x0": 45, "housing_x1": 275, "housing_top": 15}
+]
