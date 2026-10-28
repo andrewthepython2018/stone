@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Сборка переносной версии для Windows (без установки Python) на Linux.
 #   portable/build_portable.sh ПАПКА_СБОРКИ
-# Нужны: curl, unzip, pip, x86_64-w64-mingw32-gcc/windres; wine — для
-# предкомпиляции .pyc (необязательно).
+# Нужны: curl, unzip, pip; wine — для предкомпиляции .pyc (необязательно).
+# Файлы библиотек кладутся без изменений (как в пакетах PyPI): их «репутация»
+# в Windows привязана к содержимому файла.
 # Результат: ПАПКА_СБОРКИ/Kuskovatost_foto/ и ПАПКА_СБОРКИ/Kuskovatost_foto.zip
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -39,7 +40,10 @@ P=$SP/PySide6
   find translations -type f ! -name 'qtbase_ru.qm' -delete
   rm -rf plugins/qmltooling plugins/qmllint plugins/designer plugins/sqldrivers plugins/scenegraph )
 rm -f "$SP"/cv2/opencv_videoio_ffmpeg*.dll
-find "$SP" -type d \( -name tests -o -name __pycache__ \) -prune -exec rm -rf {} +
+# тесты библиотек не нужны; numpy/_core/tests оставляем — numpy.testing импортирует оттуда _natype
+find "$SP" -type d -name __pycache__ -prune -exec rm -rf {} +
+find "$SP" -type d -name tests ! -path '*/numpy/_core/tests' -prune -exec rm -rf {} +
+rm -rf "$R/Lib/venv/scripts"
 
 # 4. Программа
 mkdir -p "$DIST/app"
@@ -48,11 +52,9 @@ find "$DIST/app" -name __pycache__ -prune -exec rm -rf {} +
 cp -r "$SRC/primery" "$DIST/Примеры фото"
 cp "$HERE/ПРОЧТИ МЕНЯ.txt" "$DIST/"
 
-# 5. Kuskovatost.exe
-( cd "$HERE"
-  x86_64-w64-mingw32-windres -c 65001 launcher.rc -O coff -o "$OUT/launcher_res.o"
-  x86_64-w64-mingw32-gcc -O2 -s -municode -mwindows -static -o "$DIST/Kuskovatost.exe" \
-      launcher.c "$OUT/launcher_res.o" -lole32 -luuid -lshell32 )
+# 5. Запуск: bat-файл запускает подписанный runtime/pythonw.exe (своего exe нет —
+#    неподписанный exe блокирует Smart App Control в Windows 11)
+cp "$HERE/Запустить программу.bat" "$DIST/"
 
 # 6. Предкомпиляция .pyc самим Python для Windows — быстрее первый запуск,
 #    и ничего не пишется в папку программы (может быть только для чтения)

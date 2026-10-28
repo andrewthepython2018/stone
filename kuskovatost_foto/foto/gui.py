@@ -937,6 +937,9 @@ def main(argv=None, splash=None):
     win.showMaximized()
     if splash is not None:
         splash.finish(win)
+    from PySide6.QtCore import QTimer
+    from .shortcut import offer
+    QTimer.singleShot(800, lambda: offer(win))
     return app.exec()
 
 

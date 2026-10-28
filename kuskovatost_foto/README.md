@@ -109,5 +109,7 @@
 
 `portable/build_portable.sh ПАПКА` (на Linux) собирает папку
 `Kuskovatost_foto/` и архив: Python 3.12 для Windows (пакет NuGet), библиотеки
-(`portable/requirements-win.txt`), программа и `Kuskovatost.exe` — запуск
-одним щелчком, при первом запуске предлагает ярлык на рабочем столе.
+(`portable/requirements-win.txt`), программа и «Запустить программу.bat». Своего
+exe нет (неподписанный exe блокирует Smart App Control): bat и ярлык на рабочем
+столе, который программа предлагает создать при первом запуске, запускают
+подписанный `runtime/pythonw.exe`.
