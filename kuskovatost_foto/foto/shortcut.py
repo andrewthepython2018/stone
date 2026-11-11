@@ -1,9 +1,10 @@
 """Ярлык на рабочем столе для переносной версии.
 
-Ярлык указывает прямо на runtime/pythonw.exe (подписан Python Software
-Foundation) с аргументами app/run.py — своего неподписанного exe нет, поэтому
-Smart App Control в Windows 11 запуск не блокирует. Создаётся через COM
-(IShellLink) средствами comtypes, без PowerShell.
+Ярлык указывает на Kuskovatost.exe в папке программы (это подписанный
+pythonw.exe под другим именем, см. portable/boot/sitecustomize.py). Ярлык
+создаётся на этом компьютере, метки «из интернета» у него нет, поэтому Smart
+App Control его не блокирует (ярлык из скачанного архива — блокирует).
+Создаётся через COM (IShellLink) средствами comtypes, без PowerShell.
 """
 from __future__ import annotations
 
@@ -14,11 +15,13 @@ from pathlib import Path
 
 LINK_NAME = "Кусковатость породы по фото.lnk"
 APP = Path(__file__).resolve().parent.parent          # папка app/
+ROOT = Path(os.environ.get("KUSK_ROOT") or APP.parent)
+EXE = ROOT / "Kuskovatost.exe"
 
 
 def portable() -> bool:
-    """Запущены из переносной сборки (runtime/pythonw.exe рядом с app/)."""
-    return sys.platform == "win32" and (APP.parent / "runtime" / "pythonw.exe").exists()
+    """Запущены из переносной сборки (Kuskovatost.exe)."""
+    return sys.platform == "win32" and bool(os.environ.get("KUSK_ROOT")) and EXE.exists()
 
 
 def desktop() -> Path | None:
@@ -45,11 +48,10 @@ def create(path: Path) -> None:
     from comtypes.shelllink import IShellLinkW, ShellLink
 
     comtypes.CoInitialize()
-    root = APP.parent
     link = comtypes.client.CreateObject(ShellLink, interface=IShellLinkW)
-    link.SetPath(str(root / "runtime" / "pythonw.exe"))
-    link.SetArguments(f'-E -s -X utf8 "{APP / "run.py"}"')
-    link.SetWorkingDirectory(str(root))
+    link.SetPath(str(EXE))
+    link.SetArguments("")
+    link.SetWorkingDirectory(str(ROOT))
     link.SetIconLocation(str(APP / "foto" / "icon.ico"), 0)
     link.SetDescription("Кусковатость породы по фото")
     link.QueryInterface(IPersistFile).Save(str(path), True)

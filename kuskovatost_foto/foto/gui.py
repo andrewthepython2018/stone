@@ -19,7 +19,8 @@ from pathlib import Path
 import cv2
 import numpy as np
 from PySide6.QtCore import QLibraryInfo, QLocale, QObject, QPointF, QRectF, Qt, QTranslator, Signal
-from PySide6.QtGui import QColor, QIcon, QImage, QPainter, QPen, QPixmap, QPolygonF
+from PySide6.QtGui import (QColor, QIcon, QImage, QKeySequence, QPainter, QPen, QPixmap, QPolygonF,
+                           QShortcut)
 from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog,
                                QHBoxLayout, QHeaderView, QInputDialog, QLabel, QListWidget,
                                QListWidgetItem, QMainWindow, QMessageBox, QPushButton, QSizePolicy,
@@ -331,7 +332,7 @@ class Chart(FigureCanvasQTAgg):
                 v = st[k]
                 a1.axvline(v, color=c, ls="--", lw=1)
                 a1.text(v, 3, f" {k[:3].upper()} {fmt_x(st, k)}", color=c, fontsize=8, rotation=90, va="bottom")
-            a1.legend(fontsize=8, loc="upper left")
+            a1.legend(fontsize=8, loc="lower right")
         if done:
             a1.set_xscale("log")
             a1.xaxis.set_major_formatter(matplotlib.ticker.FuncFormatter(lambda v, _: f"{v:g}"))
@@ -439,13 +440,21 @@ class MainWindow(QMainWindow):
         self.run_btn = QPushButton("▶  Распознать")
         self.run_btn.setToolTip("Пересчитать текущее фото (после смены масштаба или детальности)")
         self.save_btn = QPushButton("💾  Сохранить отчёт…")
-        bar = QHBoxLayout()
-        for w in (self.open_btn, self.auto_btn, self.poly_btn, self.line_btn,
-                  QLabel(" Ширина ковша:"), self.width_mm, QLabel(" Масштаб:"), self.scale,
-                  QLabel(" Расчёт:"), self.detail, self.use_fines, self.auto_open, self.run_btn, self.save_btn):
-            bar.addWidget(w)
-        bar.addStretch(1)
+        self.del_btn = QPushButton("✖  Убрать фото")
+        self.del_btn.setToolTip("Убрать выбранное фото из списка и из средних (клавиша Delete)")
+        # два ряда: в один ряд панель не помещается на экране ноутбука (масштаб Windows 125–150 %)
+        bar = QVBoxLayout()
+        for row in ((self.open_btn, self.del_btn, self.auto_btn, self.poly_btn, self.line_btn, self.run_btn,
+                     self.save_btn),
+                    (QLabel("Ширина ковша:"), self.width_mm, QLabel(" Масштаб:"), self.scale,
+                     QLabel(" Расчёт:"), self.detail, self.use_fines, self.auto_open)):
+            h = QHBoxLayout()
+            for w in row:
+                h.addWidget(w)
+            h.addStretch(1)
+            bar.addLayout(h)
         self.open_btn.clicked.connect(self.open_files)
+        self.del_btn.clicked.connect(self.remove_current)
         self.auto_btn.clicked.connect(self.auto_bucket)
         self.poly_btn.clicked.connect(self.draw_polygon)
         self.line_btn.clicked.connect(self.draw_line)
@@ -456,6 +465,7 @@ class MainWindow(QMainWindow):
         self.list = QListWidget()
         self.list.setMaximumWidth(260)
         self.list.currentRowChanged.connect(self._select)
+        QShortcut(QKeySequence(Qt.Key_Delete), self.list, self.remove_current, context=Qt.WidgetShortcut)
 
         # --- центр: фото
         self.view = PhotoView()
@@ -481,7 +491,7 @@ class MainWindow(QMainWindow):
         self.total = QLabel("Кусковатость: —")
         self.total.setWordWrap(True)
         self.total.setStyleSheet("font-size:16px; font-weight:bold; padding:4px;")
-        self.total.setMinimumHeight(64)
+        self.total.setMinimumHeight(3 * self.total.fontMetrics().height() + 12)
         self.chart = Chart()
         self.table = QTableWidget(0, 3)
         self.table.setHorizontalHeaderLabels(["Класс крупности", "Это фото, %", "Среднее по фото, %"])
@@ -541,7 +551,12 @@ class MainWindow(QMainWindow):
     def add_files(self, files):
         first = None
         bad = []
+        have = {os.path.normcase(os.path.abspath(p.path)): i for i, p in enumerate(self.photos)}
         for f in files:
+            key = os.path.normcase(os.path.abspath(str(f)))
+            if key in have:                     # уже открыто — просто перейти к нему
+                first = first if first is not None else have[key]
+                continue
             img = imread(f)
             if img is None:
                 bad.append(Path(f).name)
@@ -549,6 +564,7 @@ class MainWindow(QMainWindow):
             work, _ = to_work(img)
             ph = Photo(str(f), work)
             self.photos.append(ph)
+            have[key] = len(self.photos) - 1
             it = QListWidgetItem(f"{len(self.photos)}. {ph.name}")
             it.setToolTip(str(f))
             self.list.addItem(it)
@@ -557,6 +573,31 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Фото", "Не удалось открыть: " + ", ".join(bad))
         if first is not None:
             self.list.setCurrentRow(first)
+
+    def remove_current(self):
+        """Убрать выбранное фото из списка (файл на диске не трогается)."""
+        if self.cur is None or self.busy:
+            return
+        i = self.photos.index(self.cur)
+        self.view.stop()
+        self.list.blockSignals(True)
+        del self.photos[i]
+        self.list.takeItem(i)
+        for k, ph in enumerate(self.photos):          # перенумеровать
+            if ph.result is not None:
+                self._list_text(ph)
+            else:
+                self.list.item(k).setText(f"{k + 1}. {ph.name}")
+        self.cur = None
+        self.list.setCurrentRow(-1)
+        self.list.blockSignals(False)
+        if self.photos:
+            self.list.setCurrentRow(min(i, len(self.photos) - 1))
+        else:
+            self.view.set_image(None, reset=True)
+            self._status("")
+            self._refresh_results()
+            self._update_buttons()
 
     def _select(self, row: int):
         if self.busy:
@@ -837,7 +878,7 @@ class MainWindow(QMainWindow):
 
     def _update_buttons(self):
         has = self.cur is not None and not self.busy
-        for b in (self.auto_btn, self.poly_btn, self.line_btn, self.run_btn):
+        for b in (self.auto_btn, self.poly_btn, self.line_btn, self.run_btn, self.del_btn):
             b.setEnabled(has)
         self.open_btn.setEnabled(not self.busy)
         self.save_btn.setEnabled(not self.busy and any(p.result for p in self.photos))
@@ -852,6 +893,20 @@ class MainWindow(QMainWindow):
         if not d:
             return
         out = Path(d) / f"kuskovatost_foto_{time.strftime('%Y%m%d_%H%M%S')}"
+        try:
+            self._write_report(out, done)
+        except OSError as e:
+            QMessageBox.warning(self, "Отчёт", f"Не удалось сохранить отчёт в папку\n{out}\n\n{e}\n\n"
+                                               "Выберите другую папку (например, «Документы»).")
+            return
+        self._status(f"Отчёт сохранён: {out}")
+        if sys.platform == "win32":
+            try:
+                os.startfile(out)               # показать папку с отчётом
+            except OSError:
+                pass
+
+    def _write_report(self, out: Path, done: list):
         (out / "overlays").mkdir(parents=True, exist_ok=True)
         names = [n for n, _ in size_classes({str(s): 0 for s in SIEVES})]
         with open(out / "results.csv", "w", newline="", encoding="utf-8-sig") as f:
@@ -874,13 +929,12 @@ class MainWindow(QMainWindow):
                 stem = f"{i:02d}_{Path(p.name).stem}"
                 imwrite(out / "overlays" / f"{stem}_kuski.jpg", p.result.overlay, [cv2.IMWRITE_JPEG_QUALITY, 90])
         self.chart.fig.savefig(str(out / "granulometry.png"), dpi=130)
-        self._status(f"Отчёт сохранён: {out}")
 
 
 def log_file() -> Path:
     """Журнал logs/foto.log рядом с программой; если папка только для чтения
     (например, Program Files) — в %LOCALAPPDATA%/KuskovatostFoto/logs."""
-    for d in (Path(__file__).resolve().parent.parent / "logs",
+    for d in (Path(os.environ.get("KUSK_ROOT") or Path(__file__).resolve().parent.parent) / "logs",
               Path(os.environ.get("LOCALAPPDATA") or Path.home()) / "KuskovatostFoto" / "logs"):
         try:
             d.mkdir(parents=True, exist_ok=True)

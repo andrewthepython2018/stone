@@ -1,6 +1,6 @@
-"""Точка входа переносной версии: «Запустить программу.bat» и ярлык на рабочем
-столе запускают runtime/pythonw.exe -E -s -X utf8 app/run.py [ФОТО ...].
-Свой exe не используется: его заблокировал бы Smart App Control.
+"""Точка входа переносной версии. Kuskovatost.exe (подписанный pythonw.exe под
+другим именем) через portable/boot/sitecustomize.py запускает этот файл;
+аргументы — фото, перетащенные на exe или ярлык.
 
 Пока грузятся библиотеки (первый запуск — до полуминуты), показывается
 заставка. Любая ошибка запуска пишется в журнал и показывается окном,
@@ -14,6 +14,7 @@ import traceback
 from pathlib import Path
 
 APP = Path(__file__).resolve().parent
+ROOT = Path(os.environ.get("KUSK_ROOT") or APP.parent)     # папка с Kuskovatost.exe
 sys.path.insert(0, str(APP))
 
 REPORTED = 3            # код выхода «ошибка уже показана пользователю»
@@ -28,7 +29,7 @@ def _message(text: str):
 
 
 def _log_path() -> Path:
-    for d in (APP.parent / "logs", Path(os.environ.get("LOCALAPPDATA") or Path.home()) / "KuskovatostFoto" / "logs"):
+    for d in (ROOT / "logs", Path(os.environ.get("LOCALAPPDATA") or Path.home()) / "KuskovatostFoto" / "logs"):
         try:
             d.mkdir(parents=True, exist_ok=True)
             with open(d / "foto.log", "a", encoding="utf-8"):

@@ -107,9 +107,25 @@
 
 ## Переносная версия для Windows (без установки Python)
 
-`portable/build_portable.sh ПАПКА` (на Linux) собирает папку
-`Kuskovatost_foto/` и архив: Python 3.12 для Windows (пакет NuGet), библиотеки
-(`portable/requirements-win.txt`), программа и «Запустить программу.bat». Своего
-exe нет (неподписанный exe блокирует Smart App Control): bat и ярлык на рабочем
-столе, который программа предлагает создать при первом запуске, запускают
-подписанный `runtime/pythonw.exe`.
+`python portable/build_portable.py ПАПКА` (на Windows или Linux; на Linux нужен ещё `python3.12`) собирает папку
+`Kuskovatost_foto/` и архив. Запуск — **`Kuskovatost.exe`**: это `pythonw.exe`
+из официальной сборки Python 3.12 под другим именем (подпись Python Software
+Foundation сохраняется). Загрузчик `portable/boot/sitecustomize.py` при первом
+запуске распаковывает библиотеки (`bin/libs.zip`) в
+`%LOCALAPPDATA%\KuskovatostFoto` и запускает `bin/app/run.py`.
+
+Почему так (проверено на Windows 11 с включённым Smart App Control):
+
+* собственный неподписанный exe Smart App Control блокирует;
+* `.bat` и `.lnk` из архива, скачанного из интернета, он блокирует **молча**
+  («Dangerous file extension from the web») — двойной щелчок ничего не делает;
+* подписанный exe и библиотеки (numpy, scipy, OpenCV, Qt) с той же меткой
+  запускаются;
+* архив из 7000 файлов Проводник распаковывает около 8 минут, поэтому в архиве
+  ~70 файлов, а библиотеки лежат одним вложенным архивом.
+
+Ярлык на рабочем столе программа создаёт сама (у него нет метки «из интернета»).
+
+`install.bat` / `start.bat` — вариант для разработки; если папка скачана из
+интернета архивом, перед распаковкой снимите метку: Свойства архива →
+«Разблокировать».
