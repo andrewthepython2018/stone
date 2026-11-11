@@ -1,9 +1,9 @@
 """Ярлык на рабочем столе для переносной версии.
 
-Ярлык указывает на Kuskovatost.exe в папке программы (это подписанный
-pythonw.exe под другим именем, см. portable/boot/sitecustomize.py). Ярлык
-создаётся на этом компьютере, метки «из интернета» у него нет, поэтому Smart
-App Control его не блокирует (ярлык из скачанного архива — блокирует).
+Ярлык открывает Kuskovatost.exe (подписанный pythonw.exe под другим именем,
+см. portable/boot/sitecustomize.py) через Проводник: explorer.exe "…exe".
+Ярлык прямо на exe с меткой «из интернета» Smart App Control блокирует, как и
+ярлык из скачанного архива; проверено на Windows 11.
 Создаётся через COM (IShellLink) средствами comtypes, без PowerShell.
 """
 from __future__ import annotations
@@ -49,8 +49,12 @@ def create(path: Path) -> None:
 
     comtypes.CoInitialize()
     link = comtypes.client.CreateObject(ShellLink, interface=IShellLinkW)
-    link.SetPath(str(EXE))
-    link.SetArguments("")
+    # Ярлык прямо на Kuskovatost.exe Smart App Control блокирует, если у exe есть
+    # метка «из интернета» («Dangerous file extension from the web»); двойной щелчок
+    # по exe разрешён — поэтому ярлык открывает exe через Проводник.
+    windir = os.environ.get("SystemRoot") or os.environ.get("WINDIR") or r"C:\Windows"
+    link.SetPath(os.path.join(windir, "explorer.exe"))
+    link.SetArguments(f'"{EXE}"')
     link.SetWorkingDirectory(str(ROOT))
     link.SetIconLocation(str(APP / "foto" / "icon.ico"), 0)
     link.SetDescription("Кусковатость породы по фото")

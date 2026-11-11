@@ -30,6 +30,7 @@ import fnmatch
 import hashlib
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import urllib.request
@@ -59,10 +60,20 @@ def run(*cmd, **kw):
     subprocess.run([str(c) for c in cmd], check=True, **kw)
 
 
+def _force(func, p, _exc):
+    # Windows: папки «только чтение» (так их помечает OneDrive) не удаляются
+    os.chmod(p, stat.S_IWRITE)
+    func(p)
+
+
 def rm(path: Path):
     if path.is_dir():
-        shutil.rmtree(path)
+        if sys.version_info >= (3, 12):
+            shutil.rmtree(path, onexc=_force)
+        else:
+            shutil.rmtree(path, onerror=_force)
     elif path.exists():
+        os.chmod(path, stat.S_IWRITE)
         path.unlink()
 
 
@@ -164,8 +175,9 @@ def main(out: Path) -> None:
                 p = Path(root) / f
                 rel = p.relative_to(lib).as_posix()
                 longest = max(longest, len(rel))
-                h.update(rel.encode())
-                h.update(p.read_bytes())
+                if not f.endswith(".pyc") and ".dist-info/" not in rel:   # метка не зависит от пересборки
+                    h.update(rel.encode())
+                    h.update(p.read_bytes())
                 z.write(p, rel)
     assert longest < 170, f"слишком длинный путь в библиотеках: {longest}"
     (b / "libs.id").write_text(h.hexdigest()[:12], encoding="ascii")

@@ -160,6 +160,7 @@ def _boot() -> None:
     if not os.path.basename(sys.executable or "").lower().startswith("kuskovatost"):
         return                                           # обычный python — ничего не делаем
     root = _root()
+    code = 0
     try:
         libs = ensure_libs(root)
         import site
@@ -170,8 +171,8 @@ def _boot() -> None:
         sys.argv = [run_py] + list(getattr(sys, "orig_argv", sys.argv)[1:])
         import runpy
         runpy.run_path(run_py, run_name="__main__")
-    except SystemExit:
-        raise
+    except SystemExit as e:
+        code = e.code if isinstance(e.code, int) else (0 if e.code is None else 1)
     except BaseException:       # noqa: BLE001
         import traceback
         text = traceback.format_exc()
@@ -183,8 +184,24 @@ def _boot() -> None:
         except OSError:
             pass
         _msg("Программа не смогла запуститься.\n\n" + text[-1500:])
-        sys.exit(3)
-    sys.exit(0)
+        code = 3
+    _exit(code)
+
+
+def _exit(code: int) -> None:
+    """sys.exit() внутри sitecustomize Python считает сбоем запуска и пишет
+    «Traceback … SystemExit: 0» в журнал. Выходим сами."""
+    try:
+        import atexit
+        atexit._run_exitfuncs()
+    except BaseException:       # noqa: BLE001
+        pass
+    for s in (sys.stdout, sys.stderr):
+        try:
+            s.flush()
+        except Exception:       # noqa: BLE001
+            pass
+    os._exit(code)
 
 
 _boot()
