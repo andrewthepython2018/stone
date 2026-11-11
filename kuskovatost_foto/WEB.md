@@ -35,8 +35,9 @@ docker build -t kuskovatost .
 docker run -d --restart=always -p 80:7860 -e ACCESS_CODE=пароль kuskovatost
 ```
 
-**Hugging Face Spaces** (бесплатно, 2 ядра, 16 ГБ): создать Space типа Docker
-(Blank), в настройках GitHub-репозитория задать секрет `HF_TOKEN` (токен с
-правом записи) и переменную `HF_SPACE` (`имя/space`), затем Actions →
-«Веб-версия: выложить на Hugging Face» → Run workflow. Пароль — секрет
-`ACCESS_CODE` в настройках Space.
+**Hugging Face Spaces** (бесплатно, CPU basic: 2 ядра, 16 ГБ). Docker-Space там
+платный, поэтому создаётся Space с SDK **Gradio** (Blank, CPU basic, Public), и в
+него загружаются `app.py`, `requirements-web.txt` под именем `requirements.txt`,
+папки `fragmentation`, `web`, `primery` и `foto` (достаточно `__init__.py` и
+`analyze.py`). `app.py` запускает этот же сервер на порту 7860. Пароль задаётся
+секретом `ACCESS_CODE` в настройках Space.
