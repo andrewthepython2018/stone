@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Кусковатость породы по фото</title>
+<link rel="icon" href="/static/icon.png">
+<style>
+:root {
+  --bg: #f4f5f7; --panel: #ffffff; --text: #1d2330; --muted: #667085; --line: #d9dde5;
+  --accent: #2f6fb3; --accent-text: #ffffff; --warn-bg: #fff1c2; --warn-text: #5c4500;
+  --err-bg: #fde2e1; --err-text: #8a1c17; --sel: #e6effa; --fines: #1f6fb5;
+  --c-cur: #4c78a8; --c-x80: #e45756; --c-other: #c4c9d2; --c-bar: #9ab5d3;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #15181e; --panel: #1e232b; --text: #e6e9ef; --muted: #98a2b3; --line: #343b47;
+    --accent: #5b9be0; --accent-text: #0e1116; --warn-bg: #4a3b0c; --warn-text: #ffe7a3;
+    --err-bg: #4d1f1d; --err-text: #ffc9c5; --sel: #263447; --fines: #7ab8f5;
+    --c-cur: #6fa0d8; --c-x80: #f0807a; --c-other: #4a5260; --c-bar: #3f5f86;
+  }
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body { background: var(--bg); color: var(--text); font: 14px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+header { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; padding: 8px 12px; background: var(--panel); border-bottom: 1px solid var(--line); }
+header h1 { font-size: 16px; margin: 0 8px 0 0; white-space: nowrap; }
+.group { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.sep { width: 1px; align-self: stretch; background: var(--line); margin: 0 2px; }
+button, select, input[type=number] { font: inherit; color: var(--text); background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 5px 10px; min-height: 32px; }
+button { cursor: pointer; }
+button:hover:not(:disabled) { border-color: var(--accent); }
+button.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
+button:disabled { opacity: .45; cursor: default; }
+button.on { background: var(--sel); border-color: var(--accent); }
+input[type=number] { width: 86px; }
+label.inline { display: inline-flex; gap: 5px; align-items: center; white-space: nowrap; }
+#status { padding: 7px 12px; min-height: 34px; border-bottom: 1px solid var(--line); background: var(--panel); }
+#status.warn { background: var(--warn-bg); color: var(--warn-text); }
+#status.err { background: var(--err-bg); color: var(--err-text); }
+main { display: grid; grid-template-columns: 220px minmax(0, 1fr) 400px; height: calc(100vh - 112px); min-height: 480px; }
+#list { overflow: auto; border-right: 1px solid var(--line); background: var(--panel); margin: 0; padding: 0; list-style: none; }
+#list li { padding: 8px 10px; border-bottom: 1px solid var(--line); cursor: pointer; }
+#list li.cur { background: var(--sel); }
+#list .nm { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#list .sub { color: var(--muted); font-size: 12px; }
+#list .empty { color: var(--muted); cursor: default; padding: 14px 10px; }
+#viewwrap { position: relative; overflow: hidden; background: #0d0f12; touch-action: none; }
+#view { width: 100%; height: 100%; display: block; }
+#drop { position: absolute; inset: 0; display: flex; flex-direction: column; gap: 12px; align-items: center; justify-content: center; color: #c9ced8; text-align: center; padding: 20px; pointer-events: none; }
+#drop button { pointer-events: auto; }
+#drop.hidden { display: none; }
+#viewwrap.dragover { outline: 3px dashed var(--accent); outline-offset: -8px; }
+#hint { position: absolute; left: 8px; bottom: 8px; right: 8px; color: #fff; background: rgba(0,0,0,.6); padding: 6px 10px; border-radius: 6px; font-size: 13px; pointer-events: none; }
+#hint:empty { display: none; }
+#busy { position: absolute; top: 10px; right: 10px; background: rgba(0,0,0,.7); color: #fff; padding: 6px 12px; border-radius: 6px; display: none; }
+#busy.show { display: block; }
+#side { overflow: auto; border-left: 1px solid var(--line); background: var(--panel); padding: 10px 12px; }
+#side h2 { font-size: 14px; margin: 12px 0 6px; }
+#side h2:first-child { margin-top: 0; }
+#total { white-space: pre-line; font-size: 13px; }
+svg text { fill: var(--text); font: 11px system-ui, sans-serif; }
+svg .muted { fill: var(--muted); }
+svg .grid { stroke: var(--line); stroke-width: 1; }
+table { border-collapse: collapse; width: 100%; font-size: 13px; }
+th, td { border-bottom: 1px solid var(--line); padding: 4px 6px; text-align: right; }
+th:first-child, td:first-child { text-align: left; }
+tr.fines td { color: var(--fines); }
+.note { color: var(--muted); font-size: 12px; margin-top: 10px; }
+dialog { border: 1px solid var(--line); border-radius: 10px; background: var(--panel); color: var(--text); max-width: 360px; }
+dialog::backdrop { background: rgba(0,0,0,.4); }
+@media (max-width: 1100px) {
+  main { grid-template-columns: 180px minmax(0, 1fr); height: auto; }
+  #list, #viewwrap { height: 70vh; }
+  #side { grid-column: 1 / -1; border-left: 0; border-top: 1px solid var(--line); }
+}
+@media (max-width: 700px) {
+  header { padding: 8px 16px; }
+  .sep { display: none; }
+  main { grid-template-columns: 1fr; }
+  #list { height: auto; max-height: 160px; border-right: 0; border-bottom: 1px solid var(--line); }
+  #viewwrap { height: 62vh; }
+}
+</style>
+</head>
+<body>
+<header>
+  <h1>Кусковатость породы по фото</h1>
+  <div class="group">
+    <button id="openBtn" class="primary" title="Выбрать одно или несколько фото (jpg, png, bmp, tif, webp)">Открыть фото…</button>
+    <input id="file" type="file" accept="image/*,.tif,.tiff,.bmp" multiple hidden>
+    <button id="autoBtn" title="Заново найти ковш и посчитать породу в нём">Найти ковш</button>
+    <button id="polyBtn" title="Обвести область мышью: щелчки — вершины, двойной щелчок / правая кнопка / Enter — замкнуть; можно вести с нажатой кнопкой. Backspace — шаг назад, Esc — отмена">Обвести контур</button>
+    <button id="lineBtn" title="Провести линию по предмету известной длины и ввести её длину в мм">Эталон</button>
+    <button id="runBtn" title="Пересчитать текущее фото (после смены масштаба, ширины ковша и т. п.)">Распознать</button>
+    <button id="delBtn" title="Убрать текущее фото из списка">Убрать фото</button>
+  </div>
+  <span class="sep"></span>
+  <div class="group">
+    <label class="inline" title="Реальная ширина ковша по наружным стенкам — эталон размера при автопоиске">Ширина ковша, мм <input id="widthMm" type="number" min="300" max="20000" step="50" value="3000"></label>
+    <label class="inline" title="мм на пиксель для обведённой области; ставится сам по ковшу или эталону, можно ввести вручную">Масштаб, мм/пикс <input id="scale" type="number" min="0.01" max="1000" step="0.01" placeholder="авто"></label>
+    <label class="inline" title="«Быстро» считает по уменьшенному фото: в 2–4 раза быстрее, мелкие куски теряются">Расчёт <select id="detail"><option value="precise">Точно</option><option value="fast">Быстро</option></select></label>
+    <label class="inline" title="Мелочь мельче предела разрешения (голубая штриховка) входит в состав как мелкая фракция"><input id="fines" type="checkbox" checked> учитывать мелочь</label>
+    <label class="inline"><input id="showOv" type="checkbox" checked> показывать куски</label>
+  </div>
+  <span class="sep"></span>
+  <button id="saveBtn" title="Скачать отчёт: results.csv (открывается в Excel), granulometry.png, overlays/ — фото с найденными кусками">Скачать отчёт</button>
+</header>
+<div id="status">Откройте фото ковша с породой (можно несколько) или перетащите их в окно.</div>
+<main>
+  <ul id="list"><li class="empty">Фото пока нет</li></ul>
+  <div id="viewwrap">
+    <canvas id="view"></canvas>
+    <div id="drop">
+      <div>Перетащите сюда фото ковша с породой<br>или нажмите «Открыть фото…»</div>
+      <button id="exBtn">Открыть фото-примеры</button>
+    </div>
+    <div id="busy">Считаю…</div>
+    <div id="hint"></div>
+  </div>
+  <aside id="side">
+    <h2>Итог</h2>
+    <div id="total">Кусковатость: —</div>
+    <h2>Гранулометрический состав</h2>
+    <svg id="chart1" viewBox="0 0 380 230" width="100%" role="img" aria-label="Гранулометрический состав"></svg>
+    <h2>Кусковатость по фото</h2>
+    <svg id="chart2" viewBox="0 0 380 190" width="100%" role="img" aria-label="X50 и X80 по фото"></svg>
+    <h2>Содержание по классам крупности, % по массе</h2>
+    <table id="table"><thead><tr><th>класс</th><th>это фото</th><th>среднее</th></tr></thead><tbody></tbody></table>
+    <div class="note">Колесо мыши — увеличение, перетаскивание — сдвиг, двойной щелчок — вписать фото.
+      Фото обрабатываются на сервере и хранятся там только в памяти, пока открыта работа с ними.</div>
+  </aside>
+</main>
+<dialog id="lenDlg">
+  <form method="dialog">
+    <p id="lenText">Реальная длина линии, мм:</p>
+    <p><input id="lenMm" type="number" min="1" max="100000" step="1" value="1000" style="width:100%"></p>
+    <p style="display:flex;gap:8px;justify-content:flex-end"><button value="cancel">Отмена</button><button value="ok" class="primary">OK</button></p>
+  </form>
+</dialog>
+<script src="/static/app.js"></script>
+</body>
+</html>
