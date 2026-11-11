@@ -1,0 +1,6 @@
+.venv
+logs
+out*
+portable
+tests
+**/__pycache__

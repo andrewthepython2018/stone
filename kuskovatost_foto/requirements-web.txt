@@ -1,0 +1,9 @@
+# Веб-версия (сервер): python -m web
+numpy>=1.24
+opencv-python-headless>=4.8
+scipy>=1.10
+scikit-image>=0.22
+matplotlib>=3.7
+fastapi>=0.110
+uvicorn>=0.29
+python-multipart>=0.0.9

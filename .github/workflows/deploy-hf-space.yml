@@ -1,0 +1,49 @@
+# Выкладывает веб-версию (kuskovatost_foto) в Hugging Face Space.
+# Нужно один раз: в настройках репозитория (Settings → Secrets and variables → Actions)
+#   секрет  HF_TOKEN  — токен Hugging Face с правом записи,
+#   переменная HF_SPACE — имя Space, например  andrew/kuskovatost.
+# Запуск: вкладка Actions → «Веб-версия: выложить на Hugging Face» → Run workflow.
+name: "Веб-версия: выложить на Hugging Face"
+on:
+  workflow_dispatch:
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Собрать содержимое Space
+        run: |
+          set -e
+          mkdir space
+          cd kuskovatost_foto
+          cp -r Dockerfile .dockerignore requirements-web.txt fragmentation web primery ../space/
+          mkdir ../space/foto && cp foto/__init__.py foto/analyze.py ../space/foto/
+          cat > ../space/README.md <<'MD'
+          ---
+          title: Кусковатость породы по фото
+          emoji: 🪨
+          colorFrom: gray
+          colorTo: blue
+          sdk: docker
+          app_port: 7860
+          pinned: false
+          ---
+          Оценка кусковатости взорванной породы по фото ковша экскаватора.
+          MD
+          sed -i 's/^          //' ../space/README.md
+      - name: Отправить в Space
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HF_SPACE: ${{ vars.HF_SPACE }}
+        run: |
+          set -e
+          test -n "$HF_TOKEN" && test -n "$HF_SPACE" || { echo "Задайте секрет HF_TOKEN и переменную HF_SPACE"; exit 1; }
+          cd space
+          git init -q -b main
+          git config user.email "actions@github.com"
+          git config user.name "github-actions"
+          git lfs install --local >/dev/null
+          git lfs track "*.jpg" "*.png" >/dev/null
+          git add -A
+          git commit -qm "Веб-версия из ${GITHUB_SHA::7}"
+          git push -f "https://user:${HF_TOKEN}@huggingface.co/spaces/${HF_SPACE}" main
